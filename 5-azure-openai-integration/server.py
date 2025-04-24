@@ -14,7 +14,7 @@ from typing import List, Any, Dict
 from pydantic import BaseModel, field_validator
 from supabase import create_client, Client
 
-load_dotenv("C:/Users/LENOVO/Desktop/100 Days Challenge/mcp-basics/4-supabase-server-setup/.env")
+load_dotenv("../.env")
 
 # --- Supabase connection setup ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -140,7 +140,7 @@ def delete_row(request: TableRowDeleteRequest) -> TableRowResponse:
 
 # --- Main entry ---
 if __name__ == "__main__":
-    transport = "sse"
+    transport = "stdio"
     if transport == "stdio":
         print("Running server with stdio transport")
         mcp.run(transport="stdio")
