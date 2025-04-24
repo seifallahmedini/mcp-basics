@@ -58,6 +58,54 @@ class TableRowDeleteRequest(BaseModel):
 class TableRowResponse(BaseModel):
     data: Any
 
+class BulkInsertRequest(BaseModel):
+    table: str
+    rows: List[Dict[str, Any]]
+
+    @field_validator('rows')
+    @classmethod
+    def validate_rows(cls, v, info):
+        if not v or not isinstance(v, list):
+            raise ValueError("Rows must be a non-empty list of dictionaries.")
+        return v
+
+class BulkUpdateRequest(BaseModel):
+    table: str
+    match: Dict[str, Any]
+    values: Dict[str, Any]
+
+    @field_validator('values')
+    @classmethod
+    def validate_values(cls, v, info):
+        if not v or not isinstance(v, dict):
+            raise ValueError("Values must be a non-empty dictionary.")
+        return v
+
+class FilterRequest(BaseModel):
+    table: str
+    filters: Dict[str, Any]
+    limit: int = 10
+
+    @field_validator('filters')
+    @classmethod
+    def validate_filters(cls, v, info):
+        if not isinstance(v, dict):
+            raise ValueError("Filters must be a dictionary.")
+        return v
+
+class SearchRequest(BaseModel):
+    table: str
+    column: str
+    query: str
+    limit: int = 10
+
+    @field_validator('column')
+    @classmethod
+    def validate_column(cls, v, info):
+        if not v or not isinstance(v, str):
+            raise ValueError("Column must be a non-empty string.")
+        return v
+
 # --- MCP server setup ---
 mcp = FastMCP(
     name="SupabaseTools",
@@ -77,21 +125,6 @@ def list_tables() -> ListTablesResponse:
     result = supabase.rpc("list_public_tables").execute()
     tables = [row["table_name"] for row in result.data] if result.data else []
     return ListTablesResponse(tables=tables)
-
-@mcp.tool()
-def run_sql(request: SQLQueryRequest) -> SQLQueryResponse:
-    """
-    Run an arbitrary SQL query on the Supabase database.
-
-    Args:
-        request (SQLQueryRequest): The SQL query to execute.
-
-    Returns:
-        SQLQueryResponse: The query result data.
-    """
-    # Reason: This uses the Supabase RPC to run SQL. Use with caution.
-    result = supabase.rpc("execute_sql", {"sql": request.sql}).execute()
-    return SQLQueryResponse(data=result.data)
 
 @mcp.tool()
 def insert_row(request: TableRowRequest) -> TableRowResponse:
@@ -136,6 +169,128 @@ def delete_row(request: TableRowDeleteRequest) -> TableRowResponse:
     """
     # Reason: Uses Supabase Python client for type-safe delete.
     result = supabase.table(request.table).delete().match(request.match).execute()
+    return TableRowResponse(data=result.data)
+
+@mcp.tool()
+def get_table_schema(table: str) -> Dict[str, Any]:
+    """
+    Get the schema (columns and types) for a given table via the execute_sql RPC.
+
+    Args:
+        table (str): Table name.
+
+    Returns:
+        dict: Mapping of column_name -> data_type, or an error message.
+    """
+    # 1. Validate to prevent SQL injection
+    if not table.isidentifier():
+        return {"error": "Invalid table name."}
+
+    # 2. Build the SQL without a trailing semicolon
+    sql = (
+        f"SELECT column_name, data_type "
+        f"FROM information_schema.columns "
+        f"WHERE table_schema = 'public' AND table_name = '{table}'"
+    )
+
+    # 3. Call the RPC, catching any execution errors
+    try:
+        response = supabase.rpc("execute_sql", {"query_text": sql}).execute()
+        data = response.data
+    except Exception as e:
+        return {"error": f"Error executing SQL: {str(e)}"}
+
+    # 4. Validate that we received a non-empty list
+    if not data or not isinstance(data, list):
+        return {"error": f"No schema found for table '{table}'."}
+
+    # 5. Unpack the JSONB array from the first element
+    if not data:
+        return {"data": []}
+    # Return the data as a list of dicts with 'column_name' and 'data_type'
+    return {"data": [
+        {"column_name": col["column_name"], "data_type": col["data_type"]}
+        for col in data
+    ]}
+
+@mcp.tool()
+def get_row_count(table: str) -> int:
+    """
+    Get the number of rows in a table.
+
+    Args:
+        table (str): Table name.
+
+    Returns:
+        int: Number of rows in the table.
+    """
+    sql = f"SELECT COUNT(*) as count FROM {table};"
+    result = supabase.rpc("execute_sql", {"sql": sql}).execute()
+    if not result.data or not isinstance(result.data, list):
+        return 0
+    return result.data[0].get("count", 0)
+
+@mcp.tool()
+def get_table_sample(table: str, limit: int = 5) -> Any:
+    """
+    Get a sample of rows from a table.
+
+    Args:
+        table (str): Table name.
+        limit (int): Number of rows to sample (default 5).
+
+    Returns:
+        Any: List of sample rows.
+    """
+    result = supabase.table(table).select("*").limit(limit).execute()
+    return result.data
+
+@mcp.tool()
+def bulk_insert(request: BulkInsertRequest) -> TableRowResponse:
+    """
+    Insert multiple rows into a Supabase table.
+
+    Args:
+        request (BulkInsertRequest): Table name and list of row data.
+
+    Returns:
+        TableRowResponse: Inserted rows data or error.
+    """
+    result = supabase.table(request.table).insert(request.rows).execute()
+    return TableRowResponse(data=result.data)
+
+@mcp.tool()
+def bulk_update(request: BulkUpdateRequest) -> TableRowResponse:
+    """
+    Update multiple rows in a Supabase table matching criteria.
+
+    Args:
+        request (BulkUpdateRequest): Table, match criteria, and new values.
+
+    Returns:
+        TableRowResponse: Updated rows data or error.
+    """
+    result = supabase.table(request.table).update(request.values).match(request.match).execute()
+    return TableRowResponse(data=result.data)
+
+@mcp.tool()
+def search_rows(request: SearchRequest) -> TableRowResponse:
+    """
+    Search for rows in a table where a column contains a query string (case-insensitive).
+
+    Args:
+        request (SearchRequest): Table name, column, query string, and optional limit.
+
+    Returns:
+        TableRowResponse: Matching rows.
+    """
+    result = (
+        supabase.table(request.table)
+        .select("*")
+        .ilike(request.column, f"%{request.query}%")
+        .limit(request.limit)
+        .execute()
+    )
     return TableRowResponse(data=result.data)
 
 # --- Main entry ---

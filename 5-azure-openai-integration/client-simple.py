@@ -122,21 +122,27 @@ async def process_query(query: str) -> str:
 
     # Get assistant's response
     assistant_message = response.choices[0].message
+    print(f"Assistant: {assistant_message}")
     chat_history.append({"role": "assistant", "content": assistant_message.content or ""})
 
     # Handle tool calls if present
     if assistant_message.tool_calls:
         tool_messages = []
         for tool_call in assistant_message.tool_calls:
+            # Normalize argument keys to lowercase
+            args = json.loads(tool_call.function.arguments)
             result = await session.call_tool(
                 tool_call.function.name,
-                arguments=json.loads(tool_call.function.arguments),
+                arguments=args,
             )
+            print(f"Tool call result: {result}")
             tool_messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call.id,
-                "content": result.content[0].text,
+                "content": result.content,
             })
+
+        print(f"Tool messages: {tool_messages}")
         # Build a temporary message list for OpenAI: chat_history + assistant_message + tool_messages
         followup_messages = messages + [assistant_message] + tool_messages
         final_response = await openai_client.chat.completions.create(
@@ -165,6 +171,21 @@ async def main():
     await connect_to_server("server.py")
 
     print("\nWelcome to the Azure OpenAI MCP Chat! Type 'exit' to quit.\n")
+    # Add a system message to instruct the assistant to use ReAct and lowercase tool_call attributes
+    system_message = {
+        "role": "system",
+        "content": (
+            "You are an AI assistant that uses the ReAct (Reason + Act) pattern. "
+            "For every user query, first reason step-by-step about how to solve the problem, "
+            "then act by calling the appropriate tool or providing an answer. "
+            "When calling tools, always use lower case for all attribute names in tool_calls arguments. "
+            "Format your response as:\n"
+            "Reason: <your reasoning>\n"
+            "Act: <your action or tool call>"
+        ),
+    }
+    global chat_history
+    chat_history = [system_message]
     try:
         while True:
             query = input("You: ").strip()
